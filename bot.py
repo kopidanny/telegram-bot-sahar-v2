@@ -9,8 +9,7 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text("היי! שלח לי פעולה (למשל: '2 שתלים'), ואני 
-אשמור אותה.")
+    update.message.reply_text("שלח לי פעולה")
 
 def save_action(update: Update, context: CallbackContext):
     text = update.message.text
