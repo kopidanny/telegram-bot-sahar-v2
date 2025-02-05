@@ -1,5 +1,5 @@
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, 
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 CallbackContext
 import os
 from dotenv import load_dotenv
