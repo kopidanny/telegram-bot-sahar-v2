@@ -1,118 +1,96 @@
-import logging
 import os
-import datetime
 import json
+import logging
+import datetime
+from dotenv import load_dotenv
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, ContextTypes, filters
+)
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# Logging
+# Load .env file
+load_dotenv()
+
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment variables
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Load environment variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-
-# Price list
-PRICE_LIST = {
-    "שתל": 500,
-    "עקירה": 150,
-    "הרמת סינוס פתוחה": 750,
-    "הרמת סינוס סגורה": 300
-}
 
 # Google Sheets setup
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-sheet = client.open(GOOGLE_SHEET_NAME).sheet1
+worksheet = client.open(GOOGLE_SHEET_NAME).sheet1
 
-# Bot commands
+# פעולות ומחירים
+PRICE_LIST = {
+    "עקירה": 150,
+    "שתל": 500,
+    "הרמת סינוס פתוחה": 750,
+    "הרמת סינוס סגורה": 300,
+}
+
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("היי! שלח לי פעולה (למשל: '3 שתל') ואני אשמור אותה!")
+    await update.message.reply_text("היי! שלח לי פעולה שביצעת (למשל: '3 שתלים'), ואשמור אותה בגוגל שיטס.")
 
+# Handle actions
 async def save_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    username = update.effective_user.username or update.effective_user.first_name
+    username = update.message.from_user.username or "unknown"
     date = datetime.datetime.today().strftime("%Y-%m-%d")
 
-    found = False
-    for action, price in PRICE_LIST.items():
-        if action in text:
-            try:
-                qty = int(text.split()[0])
-                amount = qty * price
-                sheet.append_row([str(date), username, action, qty, amount])
-                await update.message.reply_text(f"הוספתי: {qty} × {action} = {amount} ש\"ח ✅")
-                found = True
-                break
-            except Exception as e:
-                logger.error(f"Error parsing text: {e}")
-                await update.message.reply_text("בעיה בקריאת הפעולה. נסה שוב בפורמט: 3 שתל")
-                return
-
-    if not found:
-        await update.message.reply_text("לא זיהיתי את סוג הפעולה. נסה משהו כמו: 2 עקירה")
-
-async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text("השתמש כך: /summary daily | weekly | monthly")
-        return
-
-    period = args[0].lower()
-    today = datetime.date.today()
-
-    if period == "daily":
-        start_date = today
-        title = "סיכום יומי"
-    elif period == "weekly":
-        start_date = today - datetime.timedelta(days=7)
-        title = "סיכום שבועי"
-    elif period == "monthly":
-        start_date = today - datetime.timedelta(days=30)
-        title = "סיכום חודשי"
-    else:
-        await update.message.reply_text("בחר רק: daily, weekly, monthly")
-        return
-
     try:
-        data = sheet.get_all_values()[1:]  # skip header
-        total_amount = 0
-        action_count = {}
+        qty_str, action_name = text.split(" ", 1)
+        quantity = int(qty_str)
+        price = PRICE_LIST.get(action_name.strip())
 
-        for row in data:
-            try:
-                row_date = datetime.datetime.strptime(row[0], "%Y-%m-%d").date()
-                if row_date >= start_date:
-                    action = row[2]
-                    qty = int(row[3])
-                    amount = int(row[4])
-                    total_amount += amount
-                    action_count[action] = action_count.get(action, 0) + qty
-            except:
-                continue
+        if price is None:
+            await update.message.reply_text("סוג פעולה לא מזוהה. נסה: עקירה, שתל, הרמת סינוס פתוחה, הרמת סינוס סגורה.")
+            return
 
-        result = f"*{title}*\n"
-        for action, qty in action_count.items():
-            result += f"- {action}: {qty} פעמים\n"
-        result += f"\nסה\"כ לתשלום: {total_amount} ש\"ח"
+        total = quantity * price
+        worksheet.append_row([date, username, action_name, quantity, price, total])
 
-        await update.message.reply_text(result, parse_mode="Markdown")
+        await update.message.reply_text(f"הוזנו {quantity} פעולות מסוג '{action_name}' – סה\"כ {total} ש\"ח.")
     except Exception as e:
-        logger.error(f"Error generating summary: {e}")
-        await update.message.reply_text("אירעה שגיאה. נסה שוב מאוחר יותר.")
+        logger.error(f"Error parsing action: {e}")
+        await update.message.reply_text("פורמט לא תקין. נסה לשלוח כמו: 2 שתלים")
+
+# Summary command
+async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = worksheet.get_all_records()
+    user = update.message.from_user.username or "unknown"
+
+    total_actions = 0
+    total_amount = 0
+
+    for row in data:
+        if row["username"] == user:
+            total_actions += row.get("quantity", 0)
+            total_amount += row.get("total", 0)
+
+    await update.message.reply_text(f"סיכום כולל עבור {user}:\nסה\"כ פעולות: {total_actions}\nסה\"כ זיכוי: {total_amount} ש\"ח")
 
 # Run bot
 def main():
-    application = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("summary", summary))
-    applica
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_action))
+
+    logger.info("Bot started...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
