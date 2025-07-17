@@ -8,43 +8,89 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from gspread.exceptions import SpreadsheetNotFound
 
-# Load environment variables
+# ---- Load environment variables ----
 load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GOOGLE_SHEET_NAME   = os.getenv("GOOGLE_SHEET_NAME")
-GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_JSON_BASE64", "")
+TELEGRAM_BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
+GOOGLE_SHEET_NAME        = os.getenv("GOOGLE_SHEET_NAME")
+RAW_CREDS_JSON           = os.getenv("GOOGLE_CREDENTIALS_JSON") or ""
+CREDS_JSON_BASE64        = os.getenv("GOOGLE_CREDENTIALS_JSON_BASE64") or ""
 
-# Validate required environment variables
-if not TELEGRAM_BOT_TOKEN:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
-if not GOOGLE_SHEET_NAME:
-    raise RuntimeError("Missing GOOGLE_SHEET_NAME env var")
-if not GOOGLE_CREDENTIALS_B64:
-    raise RuntimeError("Missing GOOGLE_CREDENTIALS_JSON_BASE64 env var")
-
-# Decode and parse Google credentials from Base64
-try:
-    creds_json = base64.b64decode(GOOGLE_CREDENTIALS_B64)
-    creds_dict = json.loads(creds_json)
-    logging.info("Loaded Google credentials from Base64")
-except Exception as e:
-    raise RuntimeError("Invalid Base64 JSON in GOOGLE_CREDENTIALS_JSON_BASE64") from e
-
-# Logging configuration
-logging.basicConfig(level=logging.INFO)
+# ---- Logging configuration ----
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Google Sheets setup
+# ---- Debug info: print env vars snippets ----
+logger.debug("TELEGRAM_BOT_TOKEN present: %s", bool(TELEGRAM_BOT_TOKEN))
+logger.debug("GOOGLE_SHEET_NAME: %r", GOOGLE_SHEET_NAME)
+logger.debug("RAW_CREDS_JSON repr start: %r", RAW_CREDS_JSON[:100])
+logger.debug("CREDS_JSON_BASE64 repr start: %r (len=%d)", CREDS_JSON_BASE64[:100], len(CREDS_JSON_BASE64))
+
+# ---- Validate environment variables ----
+missing = []
+if not TELEGRAM_BOT_TOKEN:
+    missing.append("TELEGRAM_BOT_TOKEN")
+if not GOOGLE_SHEET_NAME:
+    missing.append("GOOGLE_SHEET_NAME")
+if not (RAW_CREDS_JSON or CREDS_JSON_BASE64):
+    missing.append("GOOGLE_CREDENTIALS_JSON or GOOGLE_CREDENTIALS_JSON_BASE64")
+if missing:
+    logger.error("Missing env var(s): %s", missing)
+    raise RuntimeError("Missing env var(s): " + ", ".join(missing))
+
+# ---- Decode credentials ----
+try:
+    if RAW_CREDS_JSON:
+        creds_content = RAW_CREDS_JSON
+        logger.info("Using RAW JSON credentials")
+    else:
+        creds_content = base64.b64decode(CREDS_JSON_BASE64).decode("utf-8")
+        logger.info("Decoded Base64 JSON credentials")
+    logger.debug("Decoded creds_content repr start: %r", creds_content[:200])
+    creds_dict = json.loads(creds_content)
+    logger.info("Parsed JSON credentials successfully")
+except json.JSONDecodeError as e:
+    pos = e.pos
+    snippet = creds_content[max(0, pos-50):pos+50] if creds_content else ""
+    logger.error("JSON parsing error at pos %d: snippet=%r", pos, snippet)
+    raise
+except Exception:
+    logger.exception("Failed to load credentials JSON")
+    raise
+
+# ---- Google Sheets setup ----
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-worksheet = client.open(GOOGLE_SHEET_NAME).sheet1
 
-# Price list
+# Debug: list visible spreadsheets
+try:
+    files = client.list_spreadsheet_files()
+    names = [f.get('name') for f in files]
+    logger.debug("Visible spreadsheets via service account: %s", names)
+except Exception as e:
+    logger.error("Error listing spreadsheets: %s", e)
+
+# Attempt to open by name, fallback to open_by_key
+try:
+    worksheet = client.open(GOOGLE_SHEET_NAME).sheet1
+    logger.info("Opened spreadsheet by name: %s", GOOGLE_SHEET_NAME)
+except SpreadsheetNotFound:
+    logger.warning("Could not open by name, trying by ID lookup")
+    # find ID from list
+    matches = [f for f in files if f.get('name') == GOOGLE_SHEET_NAME]
+    if not matches:
+        logger.error("No matching spreadsheet found for %r", GOOGLE_SHEET_NAME)
+        raise
+    sheet_id = matches[0].get('id')
+    logger.info("Found spreadsheet ID %s for %s, opening by key", sheet_id, GOOGLE_SHEET_NAME)
+    worksheet = client.open_by_key(sheet_id).sheet1
+
+# ---- Price list ----
 PRICE_LIST = {
     "עקירה": 150,
     "שתל": 500,
@@ -52,7 +98,7 @@ PRICE_LIST = {
     "הרמת סינוס סגורה": 300,
 }
 
-# Bot handlers
+# ---- Bot handlers ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("שלח לי פעולה לדוגמה: 3 שתלים")
 
@@ -79,22 +125,19 @@ async def save_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user.username or "unknown"
     records = worksheet.get_all_records()
-    count = 0
-    amount = 0
-    for row in records:
-        if row.get("username") == user:
-            count += row.get("quantity", 0)
-            amount += row.get("total", 0)
+    count = sum(r.get("quantity", 0) for r in records if r.get("username") == user)
+    amount = sum(r.get("total",    0) for r in records if r.get("username") == user)
     await update.message.reply_text(
         f"סיכום עבור {user}:\nסה\"כ פעולות: {count}\nסה\"כ זיכוי: {amount} ש\"ח"
     )
 
+# ---- Main ----
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_action))
-    logger.info("Bot started")
+    logger.info("Bot started polling")
     app.run_polling()
 
 if __name__ == "__main__":
