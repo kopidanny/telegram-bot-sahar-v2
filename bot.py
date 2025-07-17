@@ -1,3 +1,14 @@
+import json
+import os
+
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+try:
+    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    print("Loaded credentials successfully!")
+except json.JSONDecodeError as e:
+    print("❌ Failed to load credentials JSON:", e)
+    raise
 import os
 import json
 import logging
