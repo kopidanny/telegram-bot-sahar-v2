@@ -1,46 +1,48 @@
-import json
-import os
-
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-
-try:
-    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-    print("Loaded credentials successfully!")
-except json.JSONDecodeError as e:
-    print("❌ Failed to load credentials JSON:", e)
-    raise
 import os
 import json
 import logging
 import datetime
 from dotenv import load_dotenv
-
 from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ContextTypes, filters
-)
-
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# Load .env variables
+# Load environment variables
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON") or ""
 
-# Logging
+# Validate environment variables
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
+if not GOOGLE_SHEET_NAME:
+    raise RuntimeError("Missing GOOGLE_SHEET_NAME env var")
+if not GOOGLE_CREDENTIALS_JSON:
+    raise RuntimeError("Missing GOOGLE_CREDENTIALS_JSON env var")
+
+# Parse Google credentials JSON
+try:
+    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    logging.info("Loaded Google credentials JSON successfully")
+except json.JSONDecodeError as e:
+    raise RuntimeError("Invalid JSON in GOOGLE_CREDENTIALS_JSON") from e
+
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Set up Google Sheets access
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive",
+]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 worksheet = client.open(GOOGLE_SHEET_NAME).sheet1
 
-# פעולות ומחירים
+# Price list
 PRICE_LIST = {
     "עקירה": 150,
     "שתל": 500,
@@ -62,13 +64,17 @@ async def save_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = PRICE_LIST.get(action_name.strip())
 
         if price is None:
-            await update.message.reply_text("לא מצאתי את סוג הפעולה. נסה: עקירה, שתל, הרמת סינוס פתוחה/סגורה.")
+            await update.message.reply_text(
+                "לא מצאתי את סוג הפעולה. נסה: עקירה, שתל, הרמת סינוס פתוחה/סגורה."
+            )
             return
 
         total = quantity * price
         worksheet.append_row([date, username, action_name, quantity, price, total])
-        await update.message.reply_text(f"שמרתי {quantity}x {action_name} = {total} ש\"ח")
-    except Exception as e:
+        await update.message.reply_text(
+            f"שמרתי {quantity}x {action_name} = {total} ש\"ח"
+        )
+    except Exception:
         logger.exception("שגיאה:")
         await update.message.reply_text("פורמט שגוי. נסה: 2 שתלים")
 
@@ -83,7 +89,9 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count += row.get("quantity", 0)
             amount += row.get("total", 0)
 
-    await update.message.reply_text(f"סיכום עבור {user}:\nסה\"כ פעולות: {count}\nסה\"כ זיכוי: {amount} ש\"ח")
+    await update.message.reply_text(
+        f"סיכום עבור {user}:\nסה\"כ פעולות: {count}\nסה\"כ זיכוי: {amount} ש\"ח"
+    )
 
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
