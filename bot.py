@@ -12,22 +12,20 @@ from gspread.exceptions import SpreadsheetNotFound
 
 # ---- Load environment variables ----
 load_dotenv()
-TELEGRAM_BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
-GOOGLE_SHEET_NAME        = os.getenv("GOOGLE_SHEET_NAME")
-RAW_CREDS_JSON           = os.getenv("GOOGLE_CREDENTIALS_JSON") or ""
-CREDS_JSON_BASE64        = os.getenv("GOOGLE_CREDENTIALS_JSON_BASE64") or ""
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+GOOGLE_SHEET_NAME  = os.getenv("GOOGLE_SHEET_NAME", "").strip()
+RAW_CREDS_JSON     = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
+CREDS_JSON_BASE64  = os.getenv("GOOGLE_CREDENTIALS_JSON_BASE64", "").strip()
 
 # ---- Logging configuration ----
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# ---- Debug info: print env vars snippets ----
-logger.debug("TELEGRAM_BOT_TOKEN present: %s", bool(TELEGRAM_BOT_TOKEN))
-logger.debug("GOOGLE_SHEET_NAME: %r", GOOGLE_SHEET_NAME)
-logger.debug("RAW_CREDS_JSON repr start: %r", RAW_CREDS_JSON[:100])
-logger.debug("CREDS_JSON_BASE64 repr start: %r (len=%d)", CREDS_JSON_BASE64[:100], len(CREDS_JSON_BASE64))
+# ---- Debug environment variables ----
+logger.debug("Token after strip: %r", TELEGRAM_BOT_TOKEN)
+logger.debug("Sheet name after strip: %r", GOOGLE_SHEET_NAME)
 
-# ---- Validate environment variables ----
+# ---- Validate required environment variables ----
 missing = []
 if not TELEGRAM_BOT_TOKEN:
     missing.append("TELEGRAM_BOT_TOKEN")
@@ -43,18 +41,13 @@ if missing:
 try:
     if RAW_CREDS_JSON:
         creds_content = RAW_CREDS_JSON
-        logger.info("Using RAW JSON credentials")
+        logger.info("Using raw JSON credentials")
     else:
         creds_content = base64.b64decode(CREDS_JSON_BASE64).decode("utf-8")
         logger.info("Decoded Base64 JSON credentials")
-    logger.debug("Decoded creds_content repr start: %r", creds_content[:200])
+    logger.debug("Creds content start: %r", creds_content[:200])
     creds_dict = json.loads(creds_content)
     logger.info("Parsed JSON credentials successfully")
-except json.JSONDecodeError as e:
-    pos = e.pos
-    snippet = creds_content[max(0, pos-50):pos+50] if creds_content else ""
-    logger.error("JSON parsing error at pos %d: snippet=%r", pos, snippet)
-    raise
 except Exception:
     logger.exception("Failed to load credentials JSON")
     raise
@@ -67,27 +60,26 @@ scope = [
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
-# Debug: list visible spreadsheets
+# ---- Debug: list visible spreadsheets ----
 try:
     files = client.list_spreadsheet_files()
     names = [f.get('name') for f in files]
     logger.debug("Visible spreadsheets via service account: %s", names)
-except Exception as e:
-    logger.error("Error listing spreadsheets: %s", e)
+except Exception:
+    logger.exception("Error listing spreadsheets")
 
-# Attempt to open by name, fallback to open_by_key
+# ---- Open spreadsheet, with fallback by ID ----
 try:
     worksheet = client.open(GOOGLE_SHEET_NAME).sheet1
     logger.info("Opened spreadsheet by name: %s", GOOGLE_SHEET_NAME)
 except SpreadsheetNotFound:
     logger.warning("Could not open by name, trying by ID lookup")
-    # find ID from list
     matches = [f for f in files if f.get('name') == GOOGLE_SHEET_NAME]
     if not matches:
         logger.error("No matching spreadsheet found for %r", GOOGLE_SHEET_NAME)
         raise
     sheet_id = matches[0].get('id')
-    logger.info("Found spreadsheet ID %s for %s, opening by key", sheet_id, GOOGLE_SHEET_NAME)
+    logger.info("Found spreadsheet ID %s, opening by key", sheet_id)
     worksheet = client.open_by_key(sheet_id).sheet1
 
 # ---- Price list ----
@@ -100,7 +92,7 @@ PRICE_LIST = {
 
 # ---- Bot handlers ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("שלח לי פעולה לדוגמה: 3 שתלים")
+    await update.message.reply_text("שלח לי פעולה לדוגמה: 3 שתלים")
 
 async def save_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -120,7 +112,7 @@ async def save_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"שמרתי {quantity}x {action_name} = {total} ש\"ח")
     except Exception:
         logger.exception("Error saving action")
-        await update.message.reply_text("פורמט שגוי. נסה: 2 שתלים")
+        await update.message.reply_text("פורמט שגוי. נסה: 2 שתלים")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user.username or "unknown"
@@ -131,7 +123,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"סיכום עבור {user}:\nסה\"כ פעולות: {count}\nסה\"כ זיכוי: {amount} ש\"ח"
     )
 
-# ---- Main ----
+# ---- Main function ----
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
